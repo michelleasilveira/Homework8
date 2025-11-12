@@ -1,0 +1,16 @@
+[
+  {
+    "objectID": "homework8.html",
+    "href": "homework8.html",
+    "title": "Homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)",
+    "section": "",
+    "text": "set.seed(2025)\n\n# Core\nlibrary(tidyverse)\nlibrary(lubridate)\nlibrary(janitor)\nlibrary(skimr)\n\n# Viz\nlibrary(GGally)\n\n# Modeling\nlibrary(tidymodels)"
+  },
+  {
+    "objectID": "homework8.html#plots-and-correlations",
+    "href": "homework8.html#plots-and-correlations",
+    "title": "Homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)",
+    "section": "Plots and correlations",
+    "text": "Plots and correlations\n\n# Distribution of daily rentals\nggplot(daily, aes(bike_count)) +\n  geom_histogram(bins = 30) +\n  labs(title = \"Daily Bike Rentals\", x = \"Count (daily total)\")\n\n\n\n\n\n\n\n# Rentals by season\nggplot(daily, aes(seasons, bike_count, fill = seasons)) +\n  geom_boxplot(show.legend = FALSE) +\n  labs(title = \"Bike rentals by season\")\n\n\n\n\n\n\n\n# Weather relationships\nggplot(daily, aes(temp, bike_count)) +\n  geom_point(alpha = 0.6) +\n  geom_smooth(method = \"lm\", se = FALSE) +\n  labs(title = \"Temperature vs rentals\")\n\n`geom_smooth()` using formula = 'y ~ x'\n\n\n\n\n\n\n\n\nggplot(daily, aes(humidity, bike_count)) +\n  geom_point(alpha = 0.6) +\n  geom_smooth(method = \"lm\", se = FALSE) +\n  labs(title = \"Humidity vs rentals\")\n\n`geom_smooth()` using formula = 'y ~ x'\n\n\n\n\n\n\n\n\n\n\nnum_tbl &lt;- daily %&gt;% select(where(is.numeric))\nround(cor(num_tbl, use = \"pairwise.complete.obs\"), 3)\n\n                bike_count rainfall snowfall   temp humidity windspeed\nbike_count           1.000   -0.239   -0.265  0.753    0.036    -0.193\nrainfall            -0.239    1.000   -0.023  0.145    0.529    -0.102\nsnowfall            -0.265   -0.023    1.000 -0.267    0.065     0.021\ntemp                 0.753    0.145   -0.267  1.000    0.404    -0.261\nhumidity             0.036    0.529    0.065  0.404    1.000    -0.234\nwindspeed           -0.193   -0.102    0.021 -0.261   -0.234     1.000\nvisibility           0.166   -0.222   -0.102  0.002   -0.559     0.206\ndew_point_temp       0.650    0.265   -0.210  0.963    0.632    -0.288\nsolar_radiation      0.736   -0.323   -0.233  0.550   -0.274     0.096\n                visibility dew_point_temp solar_radiation\nbike_count           0.166          0.650           0.736\nrainfall            -0.222          0.265          -0.323\nsnowfall            -0.102         -0.210          -0.233\ntemp                 0.002          0.963           0.550\nhumidity            -0.559          0.632          -0.274\nwindspeed            0.206         -0.288           0.096\nvisibility           1.000         -0.154           0.271\ndew_point_temp      -0.154          1.000           0.383\nsolar_radiation      0.271          0.383           1.000"
+  }
+]
