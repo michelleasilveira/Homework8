@@ -1,0 +1,336 @@
+---
+title: "homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)"
+format: html
+editor: visual
+---
+
+
+```{r}
+#| label: setup-packages
+#| message: false
+#| warning: false
+# Reproducibility
+set.seed(2025)
+
+# Core data wrangling & EDA
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(skimr)
+
+# Modeling
+library(tidymodels)
+
+# Nice correlation and pairs
+library(GGally)
+```
+
+# 1) Read the data
+
+We use the **Seoul Bike Sharing** dataset (hourly records). Some systems may throw `invalid multibyte string` when reading due to non‑ASCII column names. A quick fix is to set the file **encoding**.
+
+```{r}
+#| label: read-data
+# NCSU mirror URL provided in the prompt
+url <- "https://www4.stat.ncsu.edu/~online/datasets/SeoulBikeData.csv"
+
+# Robust read with explicit encoding (works around multibyte error on some systems)
+raw_hourly <- readr::read_csv(
+  url,
+  locale = readr::locale(encoding = "Latin1")  # or "ISO-8859-1"; avoids multibyte issues
+)
+
+# Clean column names to lower snake_case for easier use
+raw_hourly <- janitor::clean_names(raw_hourly)
+
+# Peek
+glimpse(raw_hourly)
+```
+
+# 2) EDA — sanity checks & basic summaries
+
+
+## Missingness
+
+```{r}
+#| label: missingness
+raw_hourly %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  arrange(desc(n_missing)) %>%
+  filter(n_missing > 0)
+```
+
+> If the table prints no rows, there are no explicit `NA`s.
+
+## Column types & quick look
+
+```{r}
+#| label: types-and-summary
+skim(raw_hourly)
+```
+
+## Dates & factors
+
+-   Convert `date` to a proper `Date`.
+-   Turn **seasons**, **holiday**, and **functioning_day** into factors.
+-   We'll also rename a couple of variables for clarity.
+
+```{r}
+#| label: date-factors-rename
+hourly <- raw_hourly %>%
+  mutate(
+    # Ensure proper date
+    date = lubridate::mdy(date),
+    # Factors
+    seasons        = factor(seasons, levels = c("Winter","Spring","Summer","Autumn")),
+    holiday        = factor(holiday),
+    functioning_day= factor(functioning_day)
+  ) %>%
+  # For readability, ensure some friendly names (already snake_case from clean_names)
+  rename(
+    bike_count      = rented_bike_count,
+    temp            = temperature_c,
+    humidity        = humidity,
+    windspeed       = wind_speed_m_s,
+    visibility      = visibility_10m,
+    dew_point_temp  = dew_point_temperature_c,
+    solar_radiation = solar_radiation_mj_m2,
+    rainfall        = rainfall_mm,
+    snowfall        = snowfall_cm
+  )
+
+# Verify
+hourly %>% select(date, hour, bike_count, seasons, holiday, functioning_day) %>% head()
+```
+
+### What about `functioning_day`?
+
+Let's see the distribution; typically only `"Yes"` rows are operational.
+
+```{r}
+#| label: functioning-dist
+count(hourly, functioning_day)
+```
+
+We'll **subset to `functioning_day == "Yes"`** for analysis.
+
+```{r}
+#| label: subset-functioning
+hourly_fun <- hourly %>% filter(functioning_day == "Yes")
+```
+
+## Summarize to **daily** level
+
+To simplify, aggregate hourly rows into one row **per day**:
+
+-   group by `date`, `seasons`, and `holiday`
+-   sum: `bike_count`, `rainfall`, `snowfall`
+-   mean: weather variables (`temp`, `humidity`, `windspeed`, `visibility`, `dew_point_temp`, `solar_radiation`)
+
+```{r}
+#| label: daily-summarise
+daily <- hourly_fun %>%
+  group_by(date, seasons, holiday) %>%
+  summarise(
+    bike_count      = sum(bike_count, na.rm = TRUE),
+    rainfall        = sum(rainfall, na.rm = TRUE),
+    snowfall        = sum(snowfall, na.rm = TRUE),
+    temp            = mean(temp, na.rm = TRUE),
+    humidity        = mean(humidity, na.rm = TRUE),
+    windspeed       = mean(windspeed, na.rm = TRUE),
+    visibility      = mean(visibility, na.rm = TRUE),
+    dew_point_temp  = mean(dew_point_temp, na.rm = TRUE),
+    solar_radiation = mean(solar_radiation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+glimpse(daily)
+```
+
+## Re‑check summaries
+
+```{r}
+#| label: daily-summary
+skim(daily)
+```
+
+## A few quick plots
+
+```{r}
+#| label: plots
+# Distribution of daily rentals
+ggplot(daily, aes(bike_count)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Daily Bike Rentals", x = "Bike count (daily total)")
+
+# Seasonal pattern
+ggplot(daily, aes(seasons, bike_count, fill = seasons)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Bike rentals by season")
+
+# Weather relationships
+ggplot(daily, aes(temp, bike_count)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Bike rentals vs temperature")
+
+ggplot(daily, aes(humidity, bike_count)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Bike rentals vs humidity")
+```
+
+## Correlations (numeric only)
+
+```{r}
+#| label: corrs
+num_vars <- daily %>% select(where(is.numeric))
+round(cor(num_vars, use = "pairwise.complete.obs"), 3)
+```
+
+(Optional) pairs plot:
+
+```{r}
+#| label: pairs
+GGally::ggpairs(daily %>%
+                  select(bike_count, temp, humidity, windspeed, visibility, dew_point_temp, solar_radiation, rainfall, snowfall))
+```
+
+# 3) Split data (tidymodels)
+
+Stratify by **seasons** (75/25 split).
+
+```{r}
+#| label: split
+set.seed(2025)
+split_obj <- initial_split(daily, prop = 0.75, strata = seasons)
+
+train <- training(split_obj)
+test  <- testing(split_obj)
+
+set.seed(2025)
+cv10 <- vfold_cv(train, v = 10, strata = seasons)
+
+train %>% count(seasons)
+test  %>% count(seasons)
+```
+
+# 4) Recipes
+
+We ignore the raw `date` as a predictor (set it to ID role), and create a **weekday/weekend** factor from it. Then we normalize numeric predictors and dummy‑encode categorical features.
+
+> We'll create **three recipes** with increasing complexity (interactions and quadratics).
+
+```{r}
+#| label: recipes
+# Base formula: predict daily bike_count
+base_formula <- bike_count ~ .
+
+# Common steps encapsulated as a function to avoid repetition
+base_recipe <- function(dat) {
+  recipe(bike_count ~ ., data = dat) %>%
+    update_role(date, new_role = "ID") %>%
+    step_date(date, features = "wday", label = TRUE) %>%
+    step_mutate(day_type = factor(if_else(date_wday %in% c("Sat","Sun"),
+                                          "weekend","weekday"))) %>%
+    step_rm(date_wday) %>%
+    step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+    step_normalize(all_numeric_predictors())
+}
+
+rec1 <- base_recipe(train)
+
+# Interactions: seasons × holiday, seasons × temp, temp × rainfall
+rec2 <- base_recipe(train) %>%
+  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
+                      starts_with("seasons_"):temp +
+                      temp:rainfall)
+
+# Quadratic terms for *each* numeric predictor (orthogonal polynomials)
+rec3 <- base_recipe(train) %>%
+  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
+                      starts_with("seasons_"):temp +
+                      temp:rainfall) %>%
+  step_poly(all_numeric_predictors(), degree = 2)
+```
+
+# 5) Model spec and workflows
+
+We use ordinary least squares via the `lm` engine.
+
+```{r}
+#| label: model-workflows
+lm_spec <- linear_reg() %>% set_engine("lm")
+
+wf1 <- workflow() %>% add_model(lm_spec) %>% add_recipe(rec1)
+wf2 <- workflow() %>% add_model(lm_spec) %>% add_recipe(rec2)
+wf3 <- workflow() %>% add_model(lm_spec) %>% add_recipe(rec3)
+```
+
+# 6) 10‑fold CV on the **training** set
+
+```{r}
+#| label: fit-resamples
+metrics <- metric_set(rmse, rsq)
+
+set.seed(2025)
+res1 <- fit_resamples(wf1, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
+set.seed(2025)
+res2 <- fit_resamples(wf2, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
+set.seed(2025)
+res3 <- fit_resamples(wf3, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
+
+collect_metrics(res1) %>% mutate(model = "Recipe 1")
+collect_metrics(res2) %>% mutate(model = "Recipe 2")
+collect_metrics(res3) %>% mutate(model = "Recipe 3")
+```
+
+> Pick the **lowest mean RMSE** across the three. For convenience, combine and rank:
+
+```{r}
+#| label: compare-models
+cv_summary <- bind_rows(
+  collect_metrics(res1) %>% mutate(model = "Recipe 1"),
+  collect_metrics(res2) %>% mutate(model = "Recipe 2"),
+  collect_metrics(res3) %>% mutate(model = "Recipe 3")
+) %>%
+  filter(.metric == "rmse") %>%
+  arrange(mean)
+
+cv_summary
+best_model_name <- cv_summary$model[1]
+best_model_name
+```
+
+# 7) Final fit on training **and** evaluate on test (`last_fit`)
+
+```{r}
+#| label: last-fit
+best_wf <- switch(best_model_name,
+                  "Recipe 1" = wf1,
+                  "Recipe 2" = wf2,
+                  "Recipe 3" = wf3)
+
+final_fit <- last_fit(best_wf, split_obj, metrics = metrics)
+
+# Test-set performance
+final_metrics <- collect_metrics(final_fit)
+final_metrics
+```
+
+# 8) Final model coefficients
+
+```{r}
+#| label: coef-table
+final_model <- extract_fit_parsnip(final_fit$.workflow[[1]])
+broom::tidy(final_model, conf.int = TRUE) %>%
+  arrange(desc(abs(estimate))) %>%
+  head(30)
+```
+
+# 9) Appendix — session info
+
+```{r}
+sessionInfo()
+```).
