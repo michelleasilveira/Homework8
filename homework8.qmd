@@ -1,9 +1,8 @@
 ---
-title: "homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)"
+title: "Homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)"
 format: html
 editor: visual
 ---
-
 
 ```{r}
 #| label: setup-packages
@@ -18,11 +17,10 @@ library(lubridate)
 library(janitor)
 library(skimr)
 
-# Modeling
-library(tidymodels)
-
 # Nice correlation and pairs
 library(GGally)
+library(tidymodels)                # or at least library(recipes)
+
 ```
 
 # 1) Read the data
@@ -48,7 +46,6 @@ glimpse(raw_hourly)
 ```
 
 # 2) EDA — sanity checks & basic summaries
-
 
 ## Missingness
 
@@ -80,18 +77,15 @@ skim(raw_hourly)
 #| label: date-factors-rename
 hourly <- raw_hourly %>%
   mutate(
-    # Ensure proper date
     date = lubridate::mdy(date),
-    # Factors
-    seasons        = factor(seasons, levels = c("Winter","Spring","Summer","Autumn")),
-    holiday        = factor(holiday),
-    functioning_day= factor(functioning_day)
+    seasons = factor(seasons, levels = c("Winter","Spring","Summer","Autumn")),
+    holiday = factor(holiday),
+    functioning_day = factor(functioning_day)
   ) %>%
-  # For readability, ensure some friendly names (already snake_case from clean_names)
   rename(
     bike_count      = rented_bike_count,
     temp            = temperature_c,
-    humidity        = humidity,
+    humidity        = humidity_percent,
     windspeed       = wind_speed_m_s,
     visibility      = visibility_10m,
     dew_point_temp  = dew_point_temperature_c,
@@ -204,16 +198,14 @@ Stratify by **seasons** (75/25 split).
 ```{r}
 #| label: split
 set.seed(2025)
-split_obj <- initial_split(daily, prop = 0.75, strata = seasons)
+split_obj <- rsample::initial_split(daily, prop = 0.75, strata = seasons)
 
-train <- training(split_obj)
-test  <- testing(split_obj)
+train <- rsample::training(split_obj)
+test  <- rsample::testing(split_obj)
 
 set.seed(2025)
-cv10 <- vfold_cv(train, v = 10, strata = seasons)
+cv10 <- rsample::vfold_cv(train, v = 10, strata = seasons)
 
-train %>% count(seasons)
-test  %>% count(seasons)
 ```
 
 # 4) Recipes
@@ -231,28 +223,20 @@ base_formula <- bike_count ~ .
 base_recipe <- function(dat) {
   recipe(bike_count ~ ., data = dat) %>%
     update_role(date, new_role = "ID") %>%
-    step_date(date, features = "wday", label = TRUE) %>%
-    step_mutate(day_type = factor(if_else(date_wday %in% c("Sat","Sun"),
-                                          "weekend","weekday"))) %>%
-    step_rm(date_wday) %>%
+    step_date(date, features = "dow", label = TRUE) %>%     # creates `date_dow`
+    step_mutate(
+      day_type = factor(
+        if_else(as.character(date_dow) %in% c("Saturday","Sunday"),
+                "weekend","weekday")
+      )
+    ) %>%
+    step_rm(date_dow) %>%                                   # remove the helper column
     step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+    # if step_normalize() isn't available on your recipes version, use center+scale:
     step_normalize(all_numeric_predictors())
+    # or: step_center(all_numeric_predictors()) %>% step_scale(all_numeric_predictors())
 }
 
-rec1 <- base_recipe(train)
-
-# Interactions: seasons × holiday, seasons × temp, temp × rainfall
-rec2 <- base_recipe(train) %>%
-  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
-                      starts_with("seasons_"):temp +
-                      temp:rainfall)
-
-# Quadratic terms for *each* numeric predictor (orthogonal polynomials)
-rec3 <- base_recipe(train) %>%
-  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
-                      starts_with("seasons_"):temp +
-                      temp:rainfall) %>%
-  step_poly(all_numeric_predictors(), degree = 2)
 ```
 
 # 5) Model spec and workflows
@@ -275,15 +259,25 @@ wf3 <- workflow() %>% add_model(lm_spec) %>% add_recipe(rec3)
 metrics <- metric_set(rmse, rsq)
 
 set.seed(2025)
+rec1 <- base_recipe(train)
+rec2 <- base_recipe(train) %>%
+  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
+                      starts_with("seasons_"):temp +
+                      temp:rainfall)
+
+rec3 <- base_recipe(train) %>%
+  step_interact(terms = ~ starts_with("seasons_"):starts_with("holiday_") +
+                      starts_with("seasons_"):temp +
+                      temp:rainfall) %>%
+  step_poly(all_numeric_predictors(), degree = 2)
+
+set.seed(2025)
 res1 <- fit_resamples(wf1, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
 set.seed(2025)
 res2 <- fit_resamples(wf2, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
 set.seed(2025)
 res3 <- fit_resamples(wf3, resamples = cv10, metrics = metrics, control = control_resamples(save_pred = TRUE))
 
-collect_metrics(res1) %>% mutate(model = "Recipe 1")
-collect_metrics(res2) %>% mutate(model = "Recipe 2")
-collect_metrics(res3) %>% mutate(model = "Recipe 3")
 ```
 
 > Pick the **lowest mean RMSE** across the three. For convenience, combine and rank:
@@ -331,6 +325,4 @@ broom::tidy(final_model, conf.int = TRUE) %>%
 
 # 9) Appendix — session info
 
-```{r}
-sessionInfo()
-```).
+`{r} sessionInfo()`).
