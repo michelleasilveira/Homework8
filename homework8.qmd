@@ -256,6 +256,332 @@ broom::tidy(final_model, conf.int = TRUE) %>%
   head(30)
 ```
 
+# 10) Additional models: LASSO, Trees, Bagged Trees, Random Forest
+
+```{r}
+#| label: extra-packages
+# Extra packages for new models & plots
+library(glmnet)      # LASSO engine
+library(baguette)    # bagged trees
+library(vip)         # variable importance plots
+library(rpart.plot)  # regression tree plot
+```
+
+## 10.1 Best MLR model from HW8 (baseline for comparison)
+
+```{r}
+#| label: mlr-baseline
+# Metric set for all new comparisons
+reg_metrics <- metric_set(rmse, mae)
+
+# best_wf was defined earlier based on CV RMSE across the 3 recipes
+mlr_best_fit <- fit(best_wf, data = train)
+
+mlr_test_pred <- predict(mlr_best_fit, new_data = test) %>%
+  bind_cols(test %>% select(bike_count))
+
+mlr_test_metrics <- reg_metrics(
+  mlr_test_pred,
+  truth   = bike_count,
+  estimate = .pred
+) %>%
+  mutate(model = paste0("Best MLR (", best_model_name, ")"))
+
+mlr_test_metrics
+```
+
+```{r}
+#| label: mlr-coefs
+mlr_best_coefs <- extract_fit_parsnip(mlr_best_fit) %>%
+  tidy() %>%
+  arrange(desc(abs(estimate)))
+
+head(mlr_best_coefs, 20)
+```
+
+## 10.2 LASSO (using Recipe 1)
+
+```{r}
+#| label: lasso-tune
+lasso_spec <- linear_reg(
+  penalty = tune(),
+  mixture = 1          # 1 = pure LASSO
+) %>%
+  set_engine("glmnet")
+
+lasso_wf <- workflow() %>%
+  add_model(lasso_spec) %>%
+  add_recipe(rec1)
+
+# Simple grid of penalty values
+lasso_grid <- grid_regular(penalty(), levels = 30)
+
+set.seed(2025)
+lasso_tune <- tune_grid(
+  lasso_wf,
+  resamples = cv10,
+  grid      = lasso_grid,
+  metrics   = reg_metrics
+)
+
+collect_metrics(lasso_tune)
+lasso_best <- select_best(lasso_tune, metric = "rmse")
+lasso_best
+```
+
+```{r}
+#| label: lasso-final
+lasso_final_wf  <- finalize_workflow(lasso_wf, lasso_best)
+lasso_final_fit <- fit(lasso_final_wf, data = train)
+
+lasso_test_pred <- predict(lasso_final_fit, new_data = test) %>%
+  bind_cols(test %>% select(bike_count))
+
+lasso_test_metrics <- reg_metrics(
+  lasso_test_pred,
+  truth   = bike_count,
+  estimate = .pred
+) %>%
+  mutate(model = "LASSO")
+
+lasso_test_metrics
+```
+
+```{r}
+#| label: lasso-coefs
+lasso_coefs <- extract_fit_parsnip(lasso_final_fit) %>%
+  tidy() %>%
+  arrange(desc(abs(estimate)))
+
+head(lasso_coefs, 20)
+```
+
+## 10.3 Regression Tree (tuned)
+
+```{r}
+#| label: tree-tune
+tree_spec <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth      = tune(),
+  min_n           = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+tree_wf <- workflow() %>%
+  add_model(tree_spec) %>%
+  add_recipe(rec1)
+
+tree_grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(),
+  min_n(),
+  levels = c(5, 5, 5)
+)
+
+set.seed(2025)
+tree_tune <- tune_grid(
+  tree_wf,
+  resamples = cv10,
+  grid      = tree_grid,
+  metrics   = reg_metrics
+)
+
+collect_metrics(tree_tune)
+tree_best <- select_best(tree_tune, metric = "rmse")
+tree_best
+```
+
+```{r}
+#| label: tree-final
+tree_final_wf  <- finalize_workflow(tree_wf, tree_best)
+tree_final_fit <- fit(tree_final_wf, data = train)
+
+tree_test_pred <- predict(tree_final_fit, new_data = test) %>%
+  bind_cols(test %>% select(bike_count))
+
+tree_test_metrics <- reg_metrics(
+  tree_test_pred,
+  truth   = bike_count,
+  estimate = .pred
+) %>%
+  mutate(model = "Regression Tree")
+
+tree_test_metrics
+```
+
+```{r}
+#| label: tree-plot
+tree_fit_parsnip <- extract_fit_parsnip(tree_final_fit)
+rpart.plot::rpart.plot(tree_fit_parsnip$fit)
+```
+
+## 10.4 Bagged Trees (tuned)
+
+```{r}
+#| label: bagged-tune
+bagged_spec <- bag_tree(
+  cost_complexity = tune(),
+  min_n           = tune()
+) %>%
+  set_engine("rpart", times = 50) %>%  # 50 bootstrap samples
+  set_mode("regression")
+
+bagged_wf <- workflow() %>%
+  add_model(bagged_spec) %>%
+  add_recipe(rec1)
+
+bagged_grid <- grid_regular(
+  cost_complexity(),
+  min_n(),
+  levels = c(5, 5)
+)
+
+set.seed(2025)
+bagged_tune <- tune_grid(
+  bagged_wf,
+  resamples = cv10,
+  grid      = bagged_grid,
+  metrics   = reg_metrics
+)
+
+collect_metrics(bagged_tune)
+bagged_best <- select_best(bagged_tune, metric = "rmse")
+bagged_best
+```
+
+```{r}
+#| label: bagged-final
+bagged_final_wf  <- finalize_workflow(bagged_wf, bagged_best)
+bagged_final_fit <- fit(bagged_final_wf, data = train)
+
+bagged_test_pred <- predict(bagged_final_fit, new_data = test) %>%
+  bind_cols(test %>% select(bike_count))
+
+bagged_test_metrics <- reg_metrics(
+  bagged_test_pred,
+  truth   = bike_count,
+  estimate = .pred
+) %>%
+  mutate(model = "Bagged Trees")
+
+bagged_test_metrics
+```
+
+```{r}
+#| label: bagged-vip
+bagged_fit_parsnip <- extract_fit_parsnip(bagged_final_fit)
+vip::vip(bagged_fit_parsnip$fit)
+```
+
+## 10.5 Random Forest (tuned)
+
+```{r}
+#| label: rf-tune
+rf_spec <- rand_forest(
+  mtry  = tune(),
+  min_n = tune(),
+  trees = 500
+) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("regression")
+
+# set up mtry range based on predictors
+rf_mtry <- finalize(mtry(), train %>% select(-bike_count))
+
+rf_wf <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(rec1)
+
+rf_grid <- grid_random(
+  rf_mtry,
+  min_n(),
+  size = 20
+)
+
+set.seed(2025)
+rf_tune <- tune_grid(
+  rf_wf,
+  resamples = cv10,
+  grid      = rf_grid,
+  metrics   = reg_metrics
+)
+
+collect_metrics(rf_tune)
+rf_best <- select_best(rf_tune, metric = "rmse")
+rf_best
+```
+
+```{r}
+#| label: rf-final
+rf_final_wf  <- finalize_workflow(rf_wf, rf_best)
+rf_final_fit <- fit(rf_final_wf, data = train)
+
+rf_test_pred <- predict(rf_final_fit, new_data = test) %>%
+  bind_cols(test %>% select(bike_count))
+
+rf_test_metrics <- reg_metrics(
+  rf_test_pred,
+  truth   = bike_count,
+  estimate = .pred
+) %>%
+  mutate(model = "Random Forest")
+
+rf_test_metrics
+```
+
+```{r}
+#| label: rf-vip
+rf_fit_parsnip <- extract_fit_parsnip(rf_final_fit)
+vip::vip(rf_fit_parsnip$fit)
+```
+
+## 10.6 Compare all final models on the test set
+
+```{r}
+#| label: test-compare
+all_test_metrics <- bind_rows(
+  mlr_test_metrics,
+  lasso_test_metrics,
+  tree_test_metrics,
+  bagged_test_metrics,
+  rf_test_metrics
+) %>%
+  filter(.metric %in% c("rmse", "mae")) %>%
+  arrange(.metric, mean)
+
+all_test_metrics
+```
+
+```{r}
+#| label: best-overall
+best_overall <- all_test_metrics %>%
+  filter(.metric == "rmse") %>%
+  arrange(mean) %>%
+  slice(1)
+
+best_overall
+overall_best_name <- best_overall$model[[1]]
+overall_best_name
+```
+
+## 10.7 Fit the overall best model on the entire data set
+
+```{r}
+#| label: best-full-fit
+overall_best_wf <- switch(
+  overall_best_name,
+  paste0("Best MLR (", best_model_name, ")") = best_wf,
+  "LASSO"           = lasso_final_wf,
+  "Regression Tree" = tree_final_wf,
+  "Bagged Trees"    = bagged_final_wf,
+  "Random Forest"   = rf_final_wf
+)
+
+best_full_fit <- fit(overall_best_wf, data = daily)
+best_full_fit
+```
+
 # Appendix — session info
 
 ```{r}
