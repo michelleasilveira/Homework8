@@ -1,5 +1,5 @@
 ---
-title: "Homework 8 - Seoul Bike Rentals — MLR with tidymodels (HW)"
+title: "Homework 9 - Seoul Bike Rentals — Additional MLR Models"
 format: html
 editor: visual
 ---
@@ -470,8 +470,35 @@ bagged_test_metrics
 
 ```{r}
 #| label: bagged-vip
+# Permutation-based variable importance for bagged trees
+
+# Prep recipe and bake training data
+rec1_prep <- prep(rec1, training = train)
+baked_train <- bake(rec1_prep, new_data = train)
+X <- baked_train %>% dplyr::select(-bike_count)
+y <- baked_train$bike_count
+
+# Custom prediction wrapper that handles the parameter name issue
+bagged_pred_wrapper <- function(object, newdata) {
+  # The bagger needs 'new_data' with underscore
+  pred_result <- predict(object, new_data = as.data.frame(newdata))
+  as.numeric(pred_result$.pred)
+}
+
+# Use the parsnip fit object
 bagged_fit_parsnip <- extract_fit_parsnip(bagged_final_fit)
-vip::vip(bagged_fit_parsnip$fit)
+
+# Permutation VIP
+vip::vip(
+  bagged_fit_parsnip,
+  method = "permute",
+  target = y,
+  train = as.data.frame(X),  # Ensure it's a data frame
+  metric = yardstick::rmse_vec,
+  pred_wrapper = bagged_pred_wrapper,
+  nsim = 10,
+  smaller_is_better = TRUE
+)
 ```
 
 ## 10.5 Random Forest (tuned)
@@ -548,7 +575,7 @@ all_test_metrics <- bind_rows(
   rf_test_metrics
 ) %>%
   filter(.metric %in% c("rmse", "mae")) %>%
-  arrange(.metric, mean)
+  arrange(.metric, .estimate)  # Changed 'mean' to '.estimate'
 
 all_test_metrics
 ```
@@ -557,7 +584,7 @@ all_test_metrics
 #| label: best-overall
 best_overall <- all_test_metrics %>%
   filter(.metric == "rmse") %>%
-  arrange(mean) %>%
+  arrange(.estimate) %>%  # Changed 'mean' to '.estimate'
   slice(1)
 
 best_overall
@@ -571,11 +598,11 @@ overall_best_name
 #| label: best-full-fit
 overall_best_wf <- switch(
   overall_best_name,
-  paste0("Best MLR (", best_model_name, ")") = best_wf,
-  "LASSO"           = lasso_final_wf,
-  "Regression Tree" = tree_final_wf,
-  "Bagged Trees"    = bagged_final_wf,
-  "Random Forest"   = rf_final_wf
+  "Best MLR (Recipe 3)" = best_wf,
+  "LASSO"               = lasso_final_wf,
+  "Regression Tree"     = tree_final_wf,
+  "Bagged Trees"        = bagged_final_wf,
+  "Random Forest"       = rf_final_wf
 )
 
 best_full_fit <- fit(overall_best_wf, data = daily)
